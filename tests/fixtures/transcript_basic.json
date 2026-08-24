@@ -1,0 +1,25 @@
+{
+  "session_id": "fixture-basic-001",
+  "messages": [
+    {
+      "role": "user",
+      "content": "The login flow is broken, can you fix it?",
+      "index": 0
+    },
+    {
+      "role": "assistant",
+      "content": "I'll update auth.py to fix the token refresh bug. Let's also add a test in test_auth.py to cover this case.",
+      "index": 1
+    },
+    {
+      "role": "user",
+      "content": "Sounds good, go ahead. Anything else?",
+      "index": 2
+    },
+    {
+      "role": "assistant",
+      "content": "I'm going to update config.py to bump the timeout value as well.",
+      "index": 3
+    }
+  ]
+}
