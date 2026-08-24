@@ -1,0 +1,18 @@
+diff --git a/auth.py b/auth.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/auth.py
++++ b/auth.py
+@@ -10,7 +10,9 @@ def refresh_token(token):
+     if token.expired:
+-        return None
++        new_token = issue_new_token(token)
++        return new_token
+     return token
++    # fixed token refresh bug
+diff --git a/config.py b/config.py
+index 9a8b7c6..1e2d3f4 100644
+--- a/config.py
++++ b/config.py
+@@ -3,4 +3,4 @@
+-TIMEOUT_SECONDS = 5
++TIMEOUT_SECONDS = 30
