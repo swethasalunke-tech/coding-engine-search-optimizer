@@ -39,14 +39,24 @@ class with `has_feature()` / `require_feature()`. There is no dashboard
 code, no CI Action, and no trend-report code anywhere in this repo. See
 `BUILD-SCHEDULE.md` for the honest day-by-day plan.
 
-**No payment processor integration exists yet.** No Stripe code, no
-webhook handler, no real or placeholder payment API keys anywhere in this
-codebase. The account owner plans to set up her own Stripe account later
-(Stripe's Managed Payments product) — see `DESIGN.md` section 5 and
-`BUILD-SCHEDULE.md` day 6+ for what that will look like once it exists.
-Until then, license tokens can only be issued manually, by hand, by
-calling `solution_optimizer.license.keys.sign_license` directly (there
-isn't even a manual issuance CLI in this repo yet — that's day 5).
+**Stripe webhook handling now exists (`solution_optimizer/billing/`), but
+it has never processed a real payment.** As of day 6, the account owner
+has a Stripe account in test mode, and this repo has a Flask webhook
+route (`solution_optimizer/billing/stripe_webhook.py`) plus checkout-to-
+license issuance logic (`solution_optimizer/billing/license_issuer.py`)
+that turns a `checkout.session.completed` event into a signed license
+token, reusing the existing `sign_license` from day 1. It was built and
+tested entirely with synthetic payloads shaped to match Stripe's publicly
+documented webhook format — no real Stripe API key was used or is
+required anywhere in it (webhook signature verification only needs a
+`whsec_...` signing secret, a different and lower-privilege credential
+than an API key). `license_issuer.DEFAULT_PRICE_TIER_MAP` is genuinely
+empty because no real Stripe Products/Prices exist yet, there is no
+deployment of this webhook route anywhere, and no live Stripe event has
+ever hit this code. See `BUILD-SCHEDULE.md` day 6 for the full, honest
+rundown, and "Testing the Stripe webhook locally" below for how the
+account owner can exercise it against her own real test-mode Stripe
+events.
 
 ## Installing
 
@@ -54,8 +64,10 @@ isn't even a manual issuance CLI in this repo yet — that's day 5).
 pip install -r requirements.txt
 ```
 
-Requires `cryptography` (for the Ed25519 license signing/verification)
-and `pytest` (for the test suite).
+Requires `cryptography` (for the Ed25519 license signing/verification),
+`pytest` (for the test suite), and, as of day 6, `flask` and `stripe`
+(for the Stripe webhook route — see "Testing the Stripe webhook locally"
+below).
 
 ## Running the tests
 
@@ -63,9 +75,11 @@ and `pytest` (for the test suite).
 python3 -m pytest tests/ -v
 ```
 
-All 68 tests are real and pass locally, including a real subprocess
-invocation of the CLI (`tests/test_cli.py`) against fixture data in
-`tests/fixtures/`.
+All 80 tests are real and pass locally (68 from day 1, plus 12 from day
+6's Stripe billing modules), including a real subprocess invocation of
+the CLI (`tests/test_cli.py`) against fixture data in `tests/fixtures/`,
+and a real Flask test-client round trip through the Stripe webhook route
+in `tests/test_stripe_webhook.py`.
 
 ## Running the CLI
 
@@ -83,7 +97,8 @@ Example real output against that fixture pair:
 3 stated solution(s): 2 applied, 1 not found, 0 no file reference -- adherence rate: 67%
 
 | # | Verdict | Matched File | Message # | Stated Text |
-|---|---------|--------------|-----------|-------------|
+|---|---------|--------------|--------------|
+---------------|
 | 1 | applied | auth.py | 1 | I'll update auth.py to fix the token refresh bug. |
 | 2 | not_found | - | 1 | Let's also add a test in test_auth.py to cover this case. |
 | 3 | applied | config.py | 3 | I'm going to update config.py to bump the timeout value as well. |
@@ -156,6 +171,72 @@ license *tests* (`tests/test_license.py`, `tests/test_gate.py`) don't
 depend on it at all: they generate their own throwaway keypairs so the
 test suite never touches the repo's real private key.
 
+## Testing the Stripe webhook locally
+
+`solution_optimizer/billing/stripe_webhook.py`'s automated tests
+(`tests/test_stripe_webhook.py`) only ever exercise **synthetic** payloads
+built by hand to match Stripe's documented format — they never talk to
+Stripe. To see this webhook route handle a **real** test-mode Stripe
+event, the account owner needs to run a few manual steps herself, in her
+own terminal, using her own Stripe account. This build did **not** run
+any of these steps — nothing here has been verified against a real
+Stripe event yet.
+
+1. Install the [Stripe CLI](https://docs.stripe.com/stripe-cli) and log
+   in to your account:
+
+   ```
+   stripe login
+   ```
+
+2. Start the webhook route locally (from the repo root, with
+   `requirements.txt` installed):
+
+   ```python
+   from solution_optimizer.billing.stripe_webhook import create_app
+   from solution_optimizer.billing.license_issuer import DEFAULT_PRICE_TIER_MAP
+   from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+   private_key = load_pem_private_key(
+       open("dev_keys/private_key.pem", "rb").read(), password=None
+   )
+
+   # DEFAULT_PRICE_TIER_MAP is empty until you've created real Products/
+   # Prices in your Stripe dashboard and added their Price IDs here.
+   app = create_app(
+       webhook_secret="<paste the whsec_... printed by `stripe listen` below>",
+       price_tier_map=DEFAULT_PRICE_TIER_MAP,
+       private_key=private_key,
+   -
+   app.run(port=5000)
+   ```
+
+3. In a second terminal, forward real test-mode events to it. This
+   prints a `whsec_...` signing secret unique to this forwarding session
+   — paste that into `webhook_secret` above:
+
+   ```
+   stripe listen --forward-to localhost:5000/webhooks/stripe
+   ```
+
+4. In a third terminal, fire a real test event:
+
+   ```
+   stripe trigger checkout.session.completed
+   ```
+
+   Note that `stripe trigger`'s synthetic session will not have
+   `line_items` expanded and almost certainly won't reference a Price ID
+   in your `price_tier_map`, so expect a 422 (`MissingLineItemsError` or
+   `UnknownPriceError`) rather than an issued license unless you've set
+   up a real Checkout Session with `expand=["line_items"]` against a
+   Price ID you've added to the map yourself.
+
+None of this requires (or should ever use) a Stripe **API key** — only
+the webhook **signing secret** that `stripe listen` prints, which is
+scoped to signature verification and carries none of an API key's
+privileges.
+
 ## Repository layout
 
 ```
@@ -168,6 +249,9 @@ solution_optimizer/
   license/
     keys.py             Ed25519 sign/verify primitives
     gate.py              LicenseGate + feature constants (scaffold only)
+  billing/
+    stripe_webhook.py    Flask /webhooks/stripe route + signature verification
+    license_issuer.py    checkout.session.completed -> signed license token
 scripts/
   generate_dev_keypair.py   one-time keypair generation for this repo
 tests/                  full pytest suite + fixtures
