@@ -74,16 +74,56 @@ not built yet; described here so scope stays honest and traceable.
   stage.
 - Not started.
 
-## Day 6+ — Stripe webhook handler `[planned, blocked on a real Stripe account]`
+## Day 6 — Stripe webhook handler `[done]`
 
-- Only to be built once the account owner has actually created a Stripe
-  account and has real (non-test-placeholder) API keys. Stripe's Managed
-  Payments product (a merchant-of-record offering) is the intended
-  integration point, since it removes the need to separately register as
-  a payment facilitator.
-- Will add a webhook endpoint/handler that listens for a successful
-  payment event and calls the same `sign_license` function
-  `scripts/issue_license.py` uses, automating what day 5 does by hand.
-- Explicitly **not** part of this repo until that account exists — there
-  is no placeholder Stripe code, no dummy webhook route, and no reference
-  to real or fake Stripe API keys anywhere in the day-1 commit.
+- `solution_optimizer/billing/stripe_webhook.py`: `verify_stripe_signature`
+  wraps Stripe's own documented verification helper
+  (`stripe.Webhook.construct_event`), and `create_app(webhook_secret,
+  price_tier_map, private_key)` builds a real Flask app with one route,
+  `POST /webhooks/stripe`. Valid `checkout.session.completed` events issue
+  a license token; unrecognized event types get a 200 ("ignored event
+  type" — Stripe expects 2xx for events an endpoint doesn't act on, or it
+  retries); invalid/tampered signatures get a 400; a recognized event with
+  an unrecognized Price ID or missing `line_items` gets a 422 with a clear
+  error message (never a silently-issued free license).
+- `solution_optimizer/billing/license_issuer.py`:
+  `issue_license_for_checkout_session` pulls the Stripe Price ID out of
+  the Checkout Session's (expanded) `line_items`, looks up the tier in a
+  `price_tier_map`, and calls the existing day-1
+  `solution_optimizer.license.keys.sign_license` — reused, not
+  reimplemented. Raises `MissingLineItemsError` if `line_items` wasn't
+  expanded rather than guessing a tier, and `UnknownPriceError` if the
+  Price ID has no configured mapping.
+- Full local test coverage (`tests/test_stripe_webhook.py`,
+  `tests/test_license_issuer.py`) using synthetic Stripe payloads: a real
+  `checkout.session.completed` event JSON shaped to match Stripe's
+  publicly documented event/object formats, signed with the official
+  `stripe` SDK's own `stripe.WebhookSignature.generate_signature_header`
+  helper (its docstring: "Useful for signing payloads in unit tests")
+  against a self-chosen test webhook secret
+  (`whsec_test_placeholder_do_not_use_live`) that has never been
+  registered with Stripe. One test round-trips a full webhook POST
+  through both `billing` (issuance) and `license` (verification) modules.
+  All 68 day-1 tests still pass unchanged, plus 12 new tests — 80 total.
+- **What this is NOT, explicitly:**
+  - **No real Stripe Products/Prices exist yet.**
+    `license_issuer.DEFAULT_PRICE_TIER_MAP` is genuinely `{}` — it has not
+    been populated with real Stripe Price IDs, because the account owner
+    hasn't created any real Products/Prices in her Stripe dashboard yet.
+    No fake-but-plausible-looking Price IDs are hardcoded anywhere in this
+    repo.
+  - **No deployment or hosting.** `create_app()` only runs locally (e.g.
+    via `flask run` or a manual `app.run()`); there is no server, no
+    public URL, and no registered webhook endpoint in Stripe pointing at
+    anything yet.
+  - **The issued token is returned in the HTTP response body.** That's a
+    day-6 local-testing simplification, documented as such in
+    `stripe_webhook.py`'s docstring — not a production delivery
+    mechanism. A real deployment must store/email the token instead of
+    echoing it back in the webhook response.
+  - **No live Stripe event has ever hit this code.** Every payload used
+    in development and testing is a synthetic JSON object built by hand
+    to match Stripe's publicly documented shapes, never data Stripe
+    actually sent. See the README's "Testing the Stripe webhook locally"
+    section for the (manual, not-yet-run) steps to change that using the
+    Stripe CLI in test mode.
